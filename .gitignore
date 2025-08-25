@@ -1,0 +1,12 @@
+# Python virtual environment
+venv/
+
+# VS Code editor settings
+.vscode/
+
+# Python cache files
+__pycache__/
+*.pyc
+
+# Configuration files with secrets (optional)
+# config.yaml
