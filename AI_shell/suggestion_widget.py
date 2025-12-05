@@ -56,9 +56,15 @@ class SuggestionList(OptionList):
         """Update the list of suggestions."""
         try:
             self.clear_options()
-            self._suggestions = suggestions.copy() if suggestions else []
-            if suggestions:
-                for suggestion in suggestions:
+            # Ensure we handle None, empty list, or list with only empty strings
+            if not suggestions or not any(s.strip() if s else False for s in suggestions):
+                self._suggestions = []
+                self.hide()
+                return
+            
+            self._suggestions = [s for s in suggestions if s and s.strip()].copy()
+            if self._suggestions:
+                for suggestion in self._suggestions:
                     self.add_option(suggestion)
                 self.show()
                 # Force refresh to ensure visibility
@@ -68,13 +74,8 @@ class SuggestionList(OptionList):
                     self.parent.refresh()
             else:
                 self.hide()
-        except Exception as e:
-            # Log error if possible
-            try:
-                if hasattr(self.app, '_log_error'):
-                    self.app._log_error(f"Error updating suggestions widget: {e}")
-            except:
-                pass
+        except Exception:
+            # Silently handle errors - just hide the widget
             self.hide()
     
     def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
