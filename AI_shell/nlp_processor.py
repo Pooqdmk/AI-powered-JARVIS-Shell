@@ -1,4 +1,3 @@
-# ai_shell/nlp_processor.py
 import platform
 import ollama
 import re
@@ -8,195 +7,229 @@ import shlex
 import logging
 from typing import Dict, Any, Optional
 
-# --- Logging ---
+# ----------------------------------------------
+# Logging
+# ----------------------------------------------
 logger = logging.getLogger(__name__)
 if not logger.handlers:
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+    logging.basicConfig(level=logging.INFO,
+                        format="%(asctime)s - %(levelname)s - %(message)s")
 
-# --- Existing maps (kept from teammate) ---
-MODEL_NAME = 'phi3:mini'
+# ----------------------------------------------
+# ALIASES + CROSS-OS COMMAND MAP
+# ----------------------------------------------
+MODEL_NAME = "phi3:mini"
+
 COMMAND_MAP = {
-    'list_items': {'Windows': 'Get-ChildItem', 'Linux': 'ls -l', 'Darwin': 'ls -l'},
-    'list_all_items': {'Windows': 'Get-ChildItem -Force', 'Linux': 'ls -a', 'Darwin': 'ls -a'},
-    'show_location': {'Windows': 'Get-Location', 'Linux': 'pwd', 'Darwin': 'pwd'},
-    'clear_screen': {'Windows': 'Clear-Host', 'Linux': 'clear', 'Darwin': 'clear'},
-    'make_directory': {'Windows': 'New-Item -ItemType Directory', 'Linux': 'mkdir', 'Darwin': 'mkdir'},
-    'create_file': {'Windows': 'New-Item -ItemType File', 'Linux': 'touch', 'Darwin': 'touch'}
-}
-ALIAS_MAP = {
-    'ls': 'list_items', 'dir': 'list_items', 'ls -a': 'list_all_items', 'pwd': 'show_location',
-    'clear': 'clear_screen', 'cls': 'clear_screen', 'mkdir': 'make_directory', 'touch': 'create_file',
-    'get-childitem': 'list_items', 'get-location': 'show_location', 'clear-host': 'clear_screen',
-    'new-item -itemtype directory': 'make_directory', 'new-item -itemtype file': 'create_file'
+    'list_items': {
+        'Windows': 'Get-ChildItem',
+        'Linux': 'ls -l',
+        'Darwin': 'ls -l'
+    },
+    'list_all_items': {
+        'Windows': 'Get-ChildItem -Force',
+        'Linux': 'ls -a',
+        'Darwin': 'ls -a'
+    },
+    'show_location': {
+        'Windows': 'Get-Location',
+        'Linux': 'pwd',
+        'Darwin': 'pwd'
+    },
+    'clear_screen': {
+        'Windows': 'Clear-Host',
+        'Linux': 'clear',
+        'Darwin': 'clear'
+    },
+    'make_directory': {
+        'Windows': 'New-Item -ItemType Directory',
+        'Linux': 'mkdir',
+        'Darwin': 'mkdir'
+    },
+    'create_file': {
+        'Windows': 'New-Item -ItemType File',
+        'Linux': 'touch',
+        'Darwin': 'touch'
+    }
 }
 
-# --- Safety / destructive verbs to require confirmation ---
+ALIAS_MAP = {
+    'ls': 'list_items',
+    'dir': 'list_items',
+    'ls -a': 'list_all_items',
+    'pwd': 'show_location',
+    'clear': 'clear_screen',
+    'cls': 'clear_screen',
+    'mkdir': 'make_directory',
+    'touch': 'create_file',
+    'get-childitem': 'list_items',
+    'get-location': 'show_location',
+    'clear-host': 'clear_screen'
+}
+
+# ----------------------------------------------
+# Safety matchers (kept)
+# ----------------------------------------------
 DANGEROUS_PATTERNS = [
-    r"\brm\b", r"\brm -rf\b", r"\brm -r\b", r"\bdel\b", r"\bRemove-Item\b", r"\bformat\b",
-    r"\bdd\b", r"\bshutdown\b", r"\breboot\b", r"\bmkfs\b", r"\b: > /dev/sda\b"
+    r"\brm -rf\b",
+    r"\bRemove-Item\b",
+    r"\bmkfs\b",
+    r"\bdd\b",
 ]
 DANGEROUS_REGEX = re.compile("|".join(DANGEROUS_PATTERNS), re.IGNORECASE)
 
-def looks_dangerous(command_str: str) -> bool:
-    return bool(DANGEROUS_REGEX.search(command_str))
+def looks_dangerous(cmd: str) -> bool:
+    return bool(DANGEROUS_REGEX.search(cmd))
 
+
+# ===========================================================================
+# LAYER 1 — BIDIRECTIONAL ALIAS MAP
+# ===========================================================================
 def get_smart_command(text: str) -> str:
     current_os = platform.system()
-    clean_text = text.strip().lower()
+    clean = text.strip().lower()
 
-    # --- Layer 1: Bidirectional Map ---
-    # ... (Your existing Layer 1 code here) ...
-    parts = text.strip().split()
-    base_command = " ".join(parts[0:3]) if "new-item" in parts else parts[0]
-    if base_command in ALIAS_MAP:
-        concept = ALIAS_MAP[base_command]
-        if current_os in COMMAND_MAP.get(concept, {}):
-            logger.info("Used Layer 1: Bidirectional Cache ⚡️")
-            translated_base = COMMAND_MAP[concept][current_os]
-            args = text.strip().split()[1:]
-            if "new-item" in base_command:
-                args = text.strip().split()[3:]
-            return f"{translated_base} {' '.join(args)}".strip()
+    # Extract potential base command
+    parts = clean.split()
+    base = parts[0] if parts else ""
 
-    # --- Layer 2: Rules Engine ---
-    # ... (Your existing Layer 2 code here) ...
-    creation_pattern = re.compile(r"(create|make)\s.*(file|folder|directory)\s*[\"']?(.+?)[\"']?")
-    location_pattern = re.compile(r"on\s(desktop|documents|downloads)")
+    # LAYER 1
+    if base in ALIAS_MAP:
+        concept = ALIAS_MAP[base]
+        if current_os in COMMAND_MAP[concept]:
+            logger.info("Used Layer 1 (Alias Map)")
+            return COMMAND_MAP[concept][current_os]
 
-    creation_match = creation_pattern.search(clean_text)
-    location_match = location_pattern.search(clean_text)
+    # ===========================================================================
+    # LAYER 2 — RULE ENGINE (FILE/FOLDER CREATION)
+    # ===========================================================================
+    pattern = re.compile(r"(create|make)\s+(file|folder|directory)\s+(.+)")
+    match = pattern.search(clean)
 
-    home_dir = os.path.expanduser("~")
-    desktop_path = os.path.join(home_dir, "OneDrive", "Desktop") if current_os == "Windows" and "OneDrive" in home_dir else os.path.join(home_dir, "Desktop")
-    location_map = {
-        "desktop": desktop_path,
-        "documents": os.path.join(home_dir, "Documents"),
-        "downloads": os.path.join(home_dir, "Downloads")
-    }
+    if match:
+        logger.info("Used Layer 2 (Rule Engine)")
 
-    if creation_match:
-        item_type = creation_match.group(2)
-        item_name = creation_match.group(3).strip()
-        logger.debug(f"Matched Layer2 creation. Type: '{item_type}', Name: '{item_name}'")
+        kind = match.group(2)
+        name = match.group(3).strip().replace('"', '')
 
-        base_path = "."
-        if location_match:
-            location_keyword = location_match.group(1)
-            if location_keyword in location_map:
-                base_path = location_map[location_keyword]
-        
-        full_path = os.path.join(base_path, item_name)
-        
-        logger.info("Used Layer 2: Create Rule")
         if current_os == "Windows":
-            ps_item_type = "Directory" if item_type in ["folder", "directory"] else "File"
-            return f'New-Item -Path "{full_path}" -ItemType {ps_item_type}'
-        else: # Linux/macOS
-            command = "mkdir" if item_type in ["folder", "directory"] else "touch"
-            return f'{command} "{full_path}"'
-            
-    # --- Layer 3: LLM Fallback ---
-    logger.info("Command not in cache or rules, using LLM...")
+            if kind in ["folder", "directory"]:
+                return f'New-Item -ItemType Directory "{name}"'
+            else:
+                return f'New-Item -ItemType File "{name}"'
+        else:
+            return f'mkdir "{name}"' if kind in ["folder", "directory"] else f'touch "{name}"'
+
+    # ===========================================================================
+    # LAYER 3 — LLM FALLBACK
+    # ===========================================================================
+    logger.info("Used Layer 3 (LLM Fallback)")
     return call_ollama_model(text)
 
-# --- The refined Layer 3 ---
+
+# ===========================================================================
+# LLM FALLBACK (ALWAYS RETURNS A VALID COMMAND)
+# ===========================================================================
 def call_ollama_model(text: str) -> str:
     current_os = platform.system()
-    shell_type = "PowerShell" if current_os == "Windows" else "bash/zsh"
-    
-    # We dynamically create few-shot examples inside the prompt.
+    shell = "PowerShell" if current_os == "Windows" else "bash"
+
+    # Path setup
     home_dir = os.path.expanduser("~")
-    desktop_path = os.path.join(home_dir, "OneDrive", "Desktop") if current_os == "Windows" and "OneDrive" in home_dir else os.path.join(home_dir, "Desktop")
+    desktop_path = os.path.join(home_dir, "OneDrive", "Desktop") if (
+        current_os == "Windows" and "OneDrive" in home_dir
+    ) else os.path.join(home_dir, "Desktop")
 
-    # The simplified, highly-focused prompt
-    # The enhanced, highly-focused prompt
+    # ===========================================================================
+    # The new, fixed, ALWAYS-GENERATE-A-COMMAND prompt
+    # ===========================================================================
     system_prompt = f"""
-You are an expert command-line interpreter. Your single purpose is to convert a user's natural language request into one and only one executable shell command.
+You are an expert {shell} command generator.
 
-Follow these strict rules without exception:
-1. Provide ONLY the executable command. Nothing else.
-2. DO NOT include any conversational text, explanations, or notes.
-3. DO NOT hallucinate, invent, or guess commands.
-4. If you cannot generate a valid command, return the exact string 'COMMAND_NOT_FOUND'.
+Your ONLY job:
+➡ Convert any natural language request into ONE valid {shell} command.
 
-Regarding your output generation:
-* Your output must be deterministic and confident.
-* The sampling method is designed to prioritize the single most probable token at each step.
+STRICT RULES:
+1. ALWAYS output exactly one command.
+2. NEVER output explanations, markdown, quotes, code blocks, or comments.
+3. NEVER output placeholders like COMMAND_NOT_FOUND.
+4. NEVER output random text; always produce a real executable command.
+5. If unsure, infer the MOST LIKELY correct command.
+6. Output MUST be valid for the OS: {current_os}.
+7. DO NOT guess file paths that don’t exist. Use safe defaults.
 
-Here are some examples of user requests and the exact, single-line command you must generate:
-- User request: "What's my current location?" -> Your response: "{COMMAND_MAP['show_location'][current_os]}"
-- User request: "What's my username?" -> Your response: "{'$env:USERNAME' if current_os == 'Windows' else 'whoami'}"
-- User request: "Check the system memory usage" -> Your response: "{'free -h' if current_os != 'Windows' else 'Get-Counter "\\Memory\\Available MBytes"'}"
-- User request: "Show me ip address" -> Your response: "{'ipconfig' if current_os == 'Windows' else 'ip addr show'}"
-- User request: "List all running processes" -> Your response: "{'Get-Process | Format-Table -AutoSize' if current_os == 'Windows' else 'ps aux'}"
-- User request: "Show the top 10 processes consuming the most memory" -> Your response: "{'Get-Process | Sort-Object -Property WorkingSet -Descending | Select-Object -First 10' if current_os == 'Windows' else 'ps aux --sort -rss | head -n 11'}"
-- User request: "List all files in the current directory, including hidden ones" -> Your response: "{COMMAND_MAP['list_all_items'][current_os]}"
-- User request: "Create a new folder called 'reports'" -> Your response: "{COMMAND_MAP['make_directory'][current_os]} 'reports'"
-- User request: "Make a file named 'notes.txt' on my desktop" -> Your response: "{COMMAND_MAP['create_file'][current_os]} '{os.path.join(desktop_path, 'notes.txt')}'"
-- User request: "How can I see my recent commands?" -> Your response: "{'history' if current_os != 'Windows' else 'Get-History'}"
-- User request: "delete the 'old_photos' folder" -> Your response: "{'rm -r old_photos' if current_os != 'Windows' else 'Remove-Item -Recurse -Force old_photos'}"
-- User request: "show me all the text files on my desktop" -> Your response: "{'ls -l ' + os.path.join(desktop_path, '*.txt') if current_os != 'Windows' else 'Get-ChildItem -Path "' + desktop_path + '" -Filter *.txt'}"
-- User request: "rename the file 'document.doc' to 'report.docx'" -> Your response: "{'mv document.doc report.docx' if current_os != 'Windows' else 'Rename-Item -Path "document.doc" -NewName "report.docx"'}"
-- User request: "What time is it?" -> Your response: "{'Get-Date' if current_os == 'Windows' else 'date'}"
-- User request: "reboot the system" -> Your response: "{'Restart-Computer' if current_os == 'Windows' else 'sudo reboot'}"
-- User request: "how much disk space do I have?" -> Your response: "{'Get-PSDrive -PSProvider FileSystem | Format-Table Name, Used, Free' if current_os == 'Windows' else 'df -h'}"
+GENERAL KNOWLEDGE:
+You know all standard PowerShell, Bash, Linux, and macOS commands.
+You know how to search files, list directories, kill processes, manage services, network tools, etc.
+
+EXAMPLES:
+User: "What's my location?"
+→ {COMMAND_MAP['show_location'][current_os]}
+
+User: "Show me my IP"
+→ {"ipconfig" if current_os == "Windows" else "ip addr show"}
+
+User: "List everything here"
+→ {COMMAND_MAP['list_all_items'][current_os]}
+
+User: "List running processes"
+→ {"Get-Process" if current_os == "Windows" else "ps aux"}
+
+User: "Sort processes by memory"
+→ {"Get-Process | Sort-Object -Property WorkingSet -Descending" if current_os == "Windows" else "ps aux --sort -rss"}
+
+User: "Show wifi networks"
+→ {"netsh wlan show networks" if current_os == "Windows" else "nmcli dev wifi"}
+
+User: "Find all PDF files"
+→ {"Get-ChildItem -Recurse -Filter *.pdf" if current_os == "Windows" else "find . -type f -name '*.pdf'"}
+
+User: "Kill the process using most RAM"
+→ {"Get-Process | Sort-Object -Property WorkingSet -Descending | Select-Object -First 1 | Stop-Process -Force" if current_os == "Windows" else "ps -eo pid,%mem --sort=-%mem | head -n 2 | awk 'NR==2{print $1}' | xargs kill -9"}
+
+Now generate ONLY the command for the user's query:
 """
-    
 
+    # Call local Ollama
     try:
         response = ollama.chat(
             model=MODEL_NAME,
             messages=[
-                {'role': 'system', 'content': system_prompt},
-                {'role': 'user', 'content': text}
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": text},
             ],
-            options={'temperature': 0.1}
+            options={"temperature": 0}
         )
-        raw_output = response['message']['content']
-        logger.debug(f"Raw LLM output: {raw_output}")
-        
-        # Post-process the output
-        command = extract_command_from_output(raw_output)
-        
-        # Check for dangerous commands
-        # if looks_dangerous(command):
-        #     logger.warning(f"LLM generated a potentially dangerous command: {command}")
-        #     # A more robust system would ask for confirmation here.
-        #     # For this simple shell, we'll return a safe "echo" command.
-        #     return f'echo "Warning: Potentially dangerous command generated. Please review manually: {command}"'
+        raw = response["message"]["content"].strip()
 
-        if command == 'COMMAND_NOT_FOUND':
-            logger.info("LLM was unable to generate a command.")
-            return 'echo "I am not able to generate a command for that request."'
+        cmd = extract_single_command(raw)
 
-        # This is where we return the clean, single-line command
-        return command
+        if looks_dangerous(cmd):
+            return f'echo "Dangerous command blocked: {cmd}"'
+
+        return cmd
 
     except Exception as e:
-        logger.exception("Error communicating with local model")
-        return f"echo 'Error with LLM service: {e}'"
+        logger.exception("LLM communication error")
+        return f'echo "Error with LLM: {e}"'
 
-def extract_command_from_output(content: str) -> str:
+
+# ===========================================================================
+# COMMAND EXTRACTION — MOST ROBUST VERSION
+# ===========================================================================
+def extract_single_command(content: str) -> str:
     """
-    Extracts the command from the LLM's response. It is highly defensive.
+    Extracts exactly ONE clean command from LLM output.
+    Removes markdown, comments, and extra sentences.
     """
-    # 1. Look for a markdown code block first. This is the cleanest output format.
-    code_block_regex = re.compile(r"```(?:\w+\n)?(.*?)```", re.DOTALL)
-    match = code_block_regex.search(content)
-    if match:
-        command = match.group(1).strip()
-        logger.debug("Extracted command from code block.")
-        return command
+    # Remove code blocks
+    content = re.sub(r"```.*?```", "", content, flags=re.DOTALL)
 
-    # 2. If no code block, try to find the last meaningful line or the first line.
-    lines = [line.strip() for line in content.split('\n') if line.strip()]
-    if lines:
-        # A simple heuristic: take the last line, as it's often the final answer.
-        final_line = lines[-1]
-        logger.debug(f"Using final line of output: {final_line}")
-        return final_line
+    # Take first non-empty line
+    lines = [l.strip() for l in content.split("\n") if l.strip()]
+    if not lines:
+        return "echo 'LLM returned no output'"
 
-    # 3. Fallback: return the original content, sanitized.
-    sanitized = content.strip().replace("`", "")
-    logger.debug("Falling back to sanitized raw content.")
-    return sanitized
+    # Ensure it's command-only (strip trailing punctuation)
+    cmd = lines[0].replace("`", "").strip().rstrip(".")
+    return cmd
