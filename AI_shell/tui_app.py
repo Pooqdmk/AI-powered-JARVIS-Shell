@@ -40,7 +40,7 @@ class AIShellApp(App):
         width: 70%;
         height: auto;
         dock: bottom;
-        margin-bottom: 5;
+        margin-bottom: 4;
         display: none;
         layer: suggestions;
     }
@@ -51,6 +51,10 @@ class AIShellApp(App):
         border: solid $primary;
         background: $surface;
         min-height: 3;
+        padding: 1;
+    }
+    Log {
+        padding: 1;
     }
     """
 
@@ -123,8 +127,8 @@ class AIShellApp(App):
             
             input_value = event.value
             
-            # Hide suggestions if input is empty
-            if not input_value.strip():
+            # Hide suggestions if input is empty - this is critical
+            if not input_value or not input_value.strip():
                 self.hide_suggestions()
                 return
             
@@ -133,38 +137,65 @@ class AIShellApp(App):
                 try:
                     await asyncio.sleep(0.1)  # Reduced from 300ms to 100ms for faster response
                     # Check if input still has content (user might have cleared it)
-                    current_input = self.query_one("#user_input", Input).value
-                    if current_input.strip() and current_input == input_value:
-                        await self.update_autocomplete_suggestions(input_value)
+                    try:
+                        current_input = self.query_one("#user_input", Input).value
+                        if not current_input or not current_input.strip():
+                            self.hide_suggestions()
+                            return
+                        if current_input == input_value:
+                            await self.update_autocomplete_suggestions(input_value)
+                    except Exception:
+                        self.hide_suggestions()
                 except asyncio.CancelledError:
                     pass  # Expected when user continues typing
                 except Exception:
-                    # Silently handle errors
-                    pass
+                    # Silently handle errors - just hide suggestions
+                    self.hide_suggestions()
             
             self._autocomplete_debounce = asyncio.create_task(debounced_autocomplete())
         except Exception:
-            # Silently handle errors
-            pass
+            # Silently handle errors - ensure suggestions are hidden
+            self.hide_suggestions()
     
     async def update_autocomplete_suggestions(self, text: str) -> None:
         """Update autocomplete suggestions based on current input."""
         try:
+            # Double-check input is still not empty
+            try:
+                current_input = self.query_one("#user_input", Input).value
+                if not current_input or not current_input.strip():
+                    self.hide_suggestions()
+                    return
+            except Exception:
+                self.hide_suggestions()
+                return
+            
             # Call the BART autocomplete engine
             suggestions = await suggest(text, limit=6)
+            
+            # Check again if input is still valid
+            try:
+                current_input = self.query_one("#user_input", Input).value
+                if not current_input or not current_input.strip():
+                    self.hide_suggestions()
+                    return
+            except Exception:
+                self.hide_suggestions()
+                return
             
             suggestion_list = self.query_one("#suggestion_list", SuggestionList)
             suggestion_container = self.query_one("#suggestion_container", Container)
             
-            if suggestions:
+            if suggestions and len(suggestions) > 0:
                 suggestion_list.update_suggestions(suggestions)
                 suggestion_container.display = True
                 # Force a refresh to ensure the container is visible
                 suggestion_container.refresh()
+                suggestion_list.refresh()
             else:
                 self.hide_suggestions()
         except Exception:
-            # Silently handle errors
+            # Silently handle errors - just hide suggestions
             self.hide_suggestions()
     
     def hide_suggestions(self) -> None:
@@ -174,9 +205,11 @@ class AIShellApp(App):
             suggestion_list = self.query_one("#suggestion_list", SuggestionList)
             suggestion_container.display = False
             suggestion_list.hide()
+            suggestion_list._visible = False
             suggestion_container.refresh()
+            suggestion_list.refresh()
         except Exception:
-            # Widgets might not be mounted yet
+            # Widgets might not be mounted yet - silently ignore
             pass
     
     def on_suggestion_list_selected(self, event: SuggestionList.Selected) -> None:
@@ -266,14 +299,29 @@ class AIShellApp(App):
         output_log.write_line(f"\n> Your request: '{user_input}'")
         
         # 1. Get Command
-        command_to_run = get_smart_command(user_input)
+        command_to_run, status_message = get_smart_command(user_input)
         
-        if "using LLM" not in command_to_run and "Used Layer" not in command_to_run:
-             output_log.write_line(f"🤖 My interpretation: Executing '{command_to_run}'")
+        # Check if we got a valid command
+        if not command_to_run or not command_to_run.strip():
+            output_log.write_line("⚠️ Could not translate your request into a command. Please try rephrasing.")
+            input_box.focus()
+            return
+        
+        # Display status message if available
+        if status_message:
+            output_log.write_line(status_message)
+        
+        # Display the command that will be executed
+        output_log.write_line(f"🤖 Executing: {command_to_run}")
         
         # 2. Execute
-        result = execute_command(command_to_run)
-        output_log.write_line(result)
+        try:
+            result = execute_command(command_to_run)
+            if result:
+                output_log.write_line(result)
+        except Exception as e:
+            # Handle execution errors gracefully
+            output_log.write_line(f"❌ Error executing command: {str(e)}")
         
         # 3. Speak (in background thread)
         if len(result) < 200: 
@@ -287,8 +335,10 @@ class AIShellApp(App):
     def action_toggle_mic(self) -> None:
         """Action to run the voice listener."""
         input_box = self.query_one("#user_input", Input)
+        output_log = self.query_one("#output_log", Log)
         input_box.placeholder = "🎤 Listening... Speak now!"
-        input_box.disabled = True 
+        input_box.disabled = True
+        output_log.write_line("🎤 Listening... Speak now!")
         self.run_worker(self.listen_worker, exclusive=True, thread=True)
 
     def listen_worker(self) -> None:
@@ -297,14 +347,16 @@ class AIShellApp(App):
 
     def on_listen_finished(self, text: str) -> None:
         input_box = self.query_one("#user_input", Input)
+        output_log = self.query_one("#output_log", Log)
         input_box.disabled = False
         input_box.placeholder = "Ask me anything..."
         
-        if text:
+        if text and text.strip():
+            output_log.write_line(f"🗣 Heard: {text}")
             input_box.value = text
             input_box.focus()
             # Trigger autocomplete for the voice input
             self.post_message(Input.Changed(input_box, text))
         else:
-            self.query_one("#output_log", Log).write_line("❌ Could not hear anything. Try again.")
+            output_log.write_line("❌ Could not hear anything. Try again.")
             input_box.focus()
